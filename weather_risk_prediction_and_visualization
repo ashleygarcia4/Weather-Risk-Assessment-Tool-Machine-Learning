@@ -1,0 +1,152 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import NearestNeighbors
+
+# Clean column names in df
+df.columns = df.columns.str.strip()
+
+# Ensure input_data columns are also cleaned
+input_data.columns = input_data.columns.str.strip()
+
+# Verify column names and access
+print("df columns:", df.columns)
+print("input_data columns:", input_data.columns)
+
+# Define the important variables for each weather risk
+flash_flood_vars = ['Te850','Te700','RH_87mb','LR_1km','LR_3km','avg_wind_abv_sfc','KI','CAPE','PWAT']
+thunderstorm_wind_vars = ['avg_wind_abv_sfc', 'diff_theta_e', 'wmsi', 'LR_1km', 'LR_3km', 'LR_87mb', 'KI', 'RH_75mb', 'RH_53mb', 'CAPE', 'RH_87mb']
+waterspout_vars = ['LR_1km', 'spd_shear', 'MixR1000', 'LR_3km', 'MixR850', 'avg_wind_abv_sfc', 'avg_wind_dir', 'temp_850', 'Te850', 'CAPE', 'RH_87mb', 'avg_wind_spd_1km', 'LR_87mb','Te700']
+hail_vars = ['KI', 'CAPE', 'temp_500', 'RH_87mb', 'diff_theta_e', 'thick700_500', 'avg_wind_dir', 'wdir_250']
+
+# Check for missing columns in df
+missing_columns_df = [col for col in flash_flood_vars + thunderstorm_wind_vars + waterspout_vars + hail_vars if col not in df.columns]
+if missing_columns_df:
+    print(f"Missing columns in df: {missing_columns_df}")
+
+# Check for missing columns in input_data
+missing_columns_input_data = [col for col in flash_flood_vars + thunderstorm_wind_vars + waterspout_vars + hail_vars if col not in input_data.columns]
+if missing_columns_input_data:
+    print(f"Missing columns in input_data: {missing_columns_input_data}")
+
+# Use a smaller sample of the data for initial testing
+df_sample = df.sample(frac=0.1, random_state=42)
+
+# Train a RandomForestClassifier for each weather risk
+rf_flash_flood = RandomForestClassifier(n_estimators=10, random_state=42)
+rf_flash_flood.fit(df_sample[flash_flood_vars].values, df_sample['Weather Risks'].values)
+
+rf_thunderstorm_wind = RandomForestClassifier(n_estimators=10, random_state=42)
+rf_thunderstorm_wind.fit(df_sample[thunderstorm_wind_vars].values, df_sample['Weather Risks'].values)
+
+rf_waterspout = RandomForestClassifier(n_estimators=10, random_state=42)
+rf_waterspout.fit(df_sample[waterspout_vars].values, df_sample['Weather Risks'].values)
+
+rf_hail = RandomForestClassifier(n_estimators=10, random_state=42)
+rf_hail.fit(df_sample[hail_vars].values, df_sample['Weather Risks'].values)
+
+# Define today's weather data separately for each set of important variables
+today_flash_flood_data = input_data[flash_flood_vars]
+today_thunderstorm_wind_data = input_data[thunderstorm_wind_vars]
+today_waterspout_data = input_data[waterspout_vars]
+today_hail_data = input_data[hail_vars]
+
+# Convert to arrays for prediction
+today_flash_flood_array = today_flash_flood_data.values.reshape(1, -1)
+today_thunderstorm_wind_array = today_thunderstorm_wind_data.values.reshape(1, -1)
+today_waterspout_array = today_waterspout_data.values.reshape(1, -1)
+today_hail_array = today_hail_data.values.reshape(1, -1)
+
+# Predict today's weather risk for each model
+predicted_risk_prob_flash_flood = rf_flash_flood.predict_proba(today_flash_flood_array)
+predicted_risk_prob_thunderstorm_wind = rf_thunderstorm_wind.predict_proba(today_thunderstorm_wind_array)
+predicted_risk_prob_waterspout = rf_waterspout.predict_proba(today_waterspout_array)
+predicted_risk_prob_hail = rf_hail.predict_proba(today_hail_array)
+
+# Combine the predicted probabilities
+predicted_risk_prob_combined = (
+    predicted_risk_prob_flash_flood +
+    predicted_risk_prob_thunderstorm_wind +
+    predicted_risk_prob_waterspout +
+    predicted_risk_prob_hail
+) / 4
+
+# Convert predicted probabilities to percentages
+predicted_percentages = predicted_risk_prob_combined[0] * 100
+
+# Filter out 'No Match' category
+weather_risks = rf_flash_flood.classes_  # Assuming all models have the same classes
+filtered_risks = [risk for risk in weather_risks if risk != 'No Match']
+filtered_percentages = [predicted_percentages[i] for i in range(len(weather_risks)) if weather_risks[i] != 'No Match']
+
+# Fit separate Nearest Neighbors models for each set of important variables
+k = 5  # Number of nearest neighbors
+nn_flash_flood = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn_flash_flood.fit(df_sample[flash_flood_vars].values)
+
+nn_thunderstorm_wind = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn_thunderstorm_wind.fit(df_sample[thunderstorm_wind_vars].values)
+
+nn_waterspout = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn_waterspout.fit(df_sample[waterspout_vars].values)
+
+nn_hail = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn_hail.fit(df_sample[hail_vars].values)
+
+# Adjust the prediction based on nearest neighbors for each weather risk
+def adjust_predictions(features, risk_name, nn_model):
+    # Find the nearest neighbors
+    input_data_selected = input_data[features].values.reshape(1, -1)
+    distances, indices = nn_model.kneighbors(input_data_selected)
+
+    # Retrieve the k-nearest analogs
+    nearest_analogs = df_sample.iloc[indices[0]]
+    # Count occurrences of each weather risk in the nearest neighbors
+    risk_counts = nearest_analogs['Weather Risks'].value_counts().to_dict()
+
+    # Find the index of the current risk
+    risk_index = filtered_risks.index(risk_name)
+
+    # Adjust the percentage based on the count of the risk in the nearest neighbors
+    filtered_percentages[risk_index] += risk_counts.get(risk_name, 0) * 10  # Adjust weight as needed
+
+# Adjust predictions for each weather risk using corresponding Nearest Neighbors models
+adjust_predictions(flash_flood_vars, 'FlashFlood', nn_flash_flood)
+adjust_predictions(thunderstorm_wind_vars, 'ThunderstormWind', nn_thunderstorm_wind)
+adjust_predictions(waterspout_vars, 'Waterspout', nn_waterspout)
+adjust_predictions(hail_vars, 'Hail', nn_hail)
+
+# Normalize the percentages to sum to 100
+total_percentage = sum(filtered_percentages)
+filtered_percentages = [p * 100 / total_percentage for p in filtered_percentages]
+
+# Define a function to get the color based on the percentage
+def get_color(percentage):
+    if percentage < 20:
+        return '#999999'  # Grey for very low risk
+    elif 20 <= percentage < 40:
+        return '#33CC00'  # Green for slight risk
+    elif 40 <= percentage <= 50:
+        return '#EAEA00'  # Yellow for moderate risk
+    else:
+        return '#FF0000'  # Red for high risk
+
+# Get colors for each bar based on the percentages
+colors = [get_color(p) for p in filtered_percentages]
+
+# Plotting the percentages with dynamic colors based on risk levels
+plt.figure(figsize=(15, 8))
+bars = plt.bar(filtered_risks, filtered_percentages, color=colors)
+
+# Adding labels on top of each bar
+for bar, percentage in zip(bars, filtered_percentages):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width() / 2, height + 1, f'{percentage:.1f}%', ha='center', va='bottom', color='black', fontsize=12)
+
+# Set y-axis to go up to 100%
+plt.ylim(0, 105)
+
+# Title and additional text
+plt.title("Risk Assessment (using TJSJ RAOB data) " + "valid " + sday, fontweight='bold', fontsize=10)
+#
