@@ -1,98 +1,492 @@
+#import pandas as pd
+from sklearn.neighbors import NearestNeighbors
+from oauth2client.client import GoogleCredentials
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from google.colab import auth
+auth.authenticate_user()
+import gspread
+from google.auth import default
+creds, _ = default()
+import requests
+import numpy as np
+import pydotplus
+from IPython.display import Image, display
+import requests
+from sklearn.tree import plot_tree, export_graphviz
+import os
+
+
+from pylab import *
+
+def calculate_thickness(lvl1, lvl2):
+    return round(float(lvl2[1]) - float(lvl1[1]), 1)
+
+def download_sounding_data(station_id, year, month, day, hour):
+    url = f'http://www.weather.uwyo.edu/cgi-bin/sounding?region=naconf&TYPE=TEXT%3ALIST&YEAR={year}&MONTH={month}&FROM={day}{hour}&TO={day}{hour}&STNM={station_id}'
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.text
+    print(f"Failed to download data. Status code: {response.status_code}")
+    return None
+
+def extract_levels(data, specific_levels, specific_indexes):
+    levels_dict = {}
+    indexes_dict = {}
+
+    for line in data.strip().split('\n'):
+        try:
+            level_info = line.strip().split()
+            pressure = level_info[0]
+            if pressure in specific_levels:
+                levels_dict[pressure] = level_info
+
+            index_info = line.strip().split(':')
+            index = index_info[0]
+            if index in specific_indexes:
+                indexes_dict[index] = float(index_info[-1])
+        except:
+            continue
+
+    return levels_dict, indexes_dict
+
+def derived_variables(file_timestamp, levels_dict, indexes_dict):
+    # Extract for specific levels from the RAOB
+    lvl_1000 = levels_dict['1000.0']
+    lvl_925  = levels_dict['925.0']
+    lvl_850  = levels_dict['850.0']
+    lvl_700  = levels_dict['700.0']
+    lvl_500  = levels_dict['500.0']
+    lvl_400  = levels_dict['400.0']
+    lvl_300  = levels_dict['300.0']
+    lvl_250  = levels_dict['250.0']
+    lvl_200  = levels_dict['200.0']
+
+    # Extract stability indexes from the RAOB #
+    SHI  = float(indexes_dict['Showalter index'])
+    LI   = float(indexes_dict['Lifted index'])
+    SWI  = float(indexes_dict['SWEAT index'])
+    KI   = float(indexes_dict['K index'])
+    TTI  = float(indexes_dict['Totals totals index'])
+    CAPE = float(indexes_dict['Convective Available Potential Energy'])-100
+    CIN  = float(indexes_dict['Convective Inhibition'])
+    LCL_T= float(indexes_dict['Temp [K] of the Lifted Condensation Level'])-273
+    LCL_P= float(indexes_dict['Pres [hPa] of the Lifted Condensation Level'])
+    PWAT = float(indexes_dict['Precipitable water [mm] for entire sounding'])/25.4
+    PWAT = round(PWAT,2)
+
+    #------------------------------------------------------------
+    #-- *Perform important calculations -------------------------
+    #------------------------------------------------------------
+
+    if len(lvl_1000) > 11:  # PRES   HGHT   TEMP   DWPT   FRPT   RELH   RELI   MIXR   DRCT   SKNT   THTA   THTE   THTV
+        pres_ind=0
+        hght_ind=1
+        temp_ind=2
+        dwpt_ind=3
+        relh_ind=5
+        mixr_ind=7
+        drct_ind=8
+        sknt_ind=9
+        thte_ind=11
+    else:  # PRES   HGHT   TEMP   DWPT   RELH   MIXR   DRCT   SKNT   THTA   THTE   THTV
+        pres_ind=0
+        hght_ind=1
+        temp_ind=2
+        dwpt_ind=3
+        relh_ind=4
+        mixr_ind=5
+        drct_ind=6
+        sknt_ind=7
+        thte_ind=9
+
+    temp_925 = float(levels_dict['925.0'][temp_ind])
+    temp_850 = float(levels_dict['850.0'][temp_ind])
+    temp_500 = float(levels_dict['500.0'][temp_ind])
+    temp_400 = float(levels_dict['400.0'][temp_ind])
+    temp_700 = float(levels_dict['700.0'][temp_ind])
+    wdir_250 = float(levels_dict['250.0'][drct_ind])
+    spd_shear = (((float(levels_dict['850.0'][sknt_ind]) - float(levels_dict['1000.0'][sknt_ind])) / 0.5) / 1400) * 1000
+    MixR1000 = float(levels_dict['1000.0'][mixr_ind])
+    MixR850 = float(levels_dict['850.0'][mixr_ind])
+    MixR700 = float(levels_dict['700.0'][mixr_ind])
+    Te1000 = float(levels_dict['1000.0'][thte_ind])
+    Te850 = float(levels_dict['850.0'][thte_ind])
+    Te700 = float(levels_dict['700.0'][thte_ind])
+
+
+    RH_87mb = (float(levels_dict['850.0'][relh_ind]) + float(levels_dict['700.0'][relh_ind])) / 2
+    RH_87mb = round(RH_87mb, 2)
+
+    RH_75mb = (float(levels_dict['700.0'][relh_ind]) + float(levels_dict['500.0'][relh_ind])) / 2
+    RH_75mb = round(RH_75mb, 2)
+
+    RH_53mb = (float(levels_dict['500.0'][relh_ind]) + float(levels_dict['300.0'][relh_ind])) / 2
+    RH_53mb = round(RH_53mb, 2)
+
+    LR_87mb = (float(levels_dict['850.0'][temp_ind]) - float(levels_dict['700.0'][temp_ind])) / 1.6
+    LR_87mb = round(LR_87mb, 2)
+
+    LR_57mb = (float(levels_dict['700.0'][temp_ind]) - float(levels_dict['500.0'][temp_ind])) / 2.7
+    LR_57mb = round(LR_57mb, 2)
+
+    LR_1km  = (float(levels_dict['1000.0'][temp_ind]) - float(levels_dict['925.0'][temp_ind])) / 0.8
+    LR_1km  = round(LR_1km, 2)
+
+    LR_3km  = (float(levels_dict['1000.0'][temp_ind]) - float(levels_dict['700.0'][temp_ind])) / 3.1
+    LR_3km  = round(LR_3km, 2)
+
+    avg_wind_spd_1km = (float(levels_dict['1000.0'][sknt_ind]) + float(levels_dict['925.0'][sknt_ind]) + float(levels_dict['850.0'][sknt_ind])) / 3
+    avg_wind_dir_1km = (float(levels_dict['1000.0'][drct_ind]) + float(levels_dict['925.0'][drct_ind]) + float(levels_dict['850.0'][drct_ind])) / 3
+
+    avg_wind_abv_sfc = (float(levels_dict['1000.0'][sknt_ind]) + float(levels_dict['925.0'][sknt_ind]) + float(levels_dict['850.0'][sknt_ind]) + float(levels_dict['700.0'][sknt_ind])) / 4
+    avg_wind_dir = (float(levels_dict['1000.0'][drct_ind]) + float(levels_dict['925.0'][drct_ind]) + float(levels_dict['850.0'][drct_ind]) + float(levels_dict['700.0'][drct_ind])) / 4
+
+    avg_wind_87 = (float(levels_dict['850.0'][sknt_ind]) + float(levels_dict['700.0'][sknt_ind])) / 2
+
+    thick1000_500 = calculate_thickness(levels_dict['1000.0'], levels_dict['500.0'])
+    thick700_500 = calculate_thickness(levels_dict['700.0'], levels_dict['500.0'])
+
+    diff_theta_e = float(levels_dict['1000.0'][thte_ind]) - min(float(levels_dict['500.0'][thte_ind]), float(levels_dict['400.0'][thte_ind]))
+    diff_theta_e = round(diff_theta_e, 2)
+
+    hmi = LR_87mb + (float(levels_dict['850.0'][temp_ind]) - float(levels_dict['850.0'][3]) - (float(levels_dict['700.0'][temp_ind]) - float(levels_dict['700.0'][3])))
+    hmi = round(hmi, 1)
+
+    wmsi = (CAPE * diff_theta_e) / 1000
+    wmsi = round(wmsi, 1)
+
+    gust = (0.0475 * wmsi) + 35
+    gust = round(gust, 1)
+
+    votd = np.round(750 / ((np.abs(temp_500) + np.abs(temp_400)) * 0.5), 0)
+
+    # Define your input data
+    input_data = pd.DataFrame({
+        'temp_925': [temp_925],
+        'temp_850': [temp_850],
+        'temp_700': [temp_700],
+        'temp_500': [temp_500],
+        'temp_400': [temp_400],
+        'wdir_250': [int(wdir_250)],
+        'spd_shear': [round(spd_shear, 1)],
+        'MixR1000': [MixR1000],
+        'MixR850': [MixR850],
+        'MixR700': [MixR700],
+        'Te1000': [int(Te1000)],
+        'Te850': [int(Te850)],
+        'Te700': [int(Te700)],
+        'RH_87mb': [int(RH_87mb)],
+        'RH_75mb': [int(RH_75mb)],
+        'RH_53mb': [int(RH_53mb)],
+        'LR_87mb': [LR_87mb],
+        'LR_57mb': [LR_57mb],
+        'LR_1km': [LR_1km],
+        'LR_3km': [LR_3km],
+        'avg_wind_spd_1km': [int(avg_wind_spd_1km)],
+        'avg_wind_dir_1km': [int(avg_wind_dir_1km)],
+        'avg_wind_abv_sfc': [int(avg_wind_abv_sfc)],
+        'avg_wind_dir': [int(avg_wind_dir)],
+        'thick1000_500': [int(thick1000_500)],
+        'thick700_500': [int(thick700_500)],
+        'diff_theta_e': [int(diff_theta_e)],
+        'hmi': [hmi],
+        'wmsi': [wmsi],
+        'gust': [gust],
+        'votd': [int(votd)],
+        'SHI': [SHI],
+        'LI': [LI],
+        'SWI': [SWI],
+        'KI': [KI],
+        'TTI': [TTI],
+        'CAPE': [CAPE],
+        'CIN': [CIN],
+        'LCL_T': [round(LCL_T,2)],
+        'LCL_P': [LCL_P],
+        'PWAT': [PWAT],
+        })
+
+    return input_data
+
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+#                                                                    DATE                                                                                             ")
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+# Define constants for GRAPH
+station_id = '78526'
+year, month, day, hour = '2024', '07', '11', '00'
+
+sday=year+'-'+month+'-'+day+' '+hour+'Z'
+
+# ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+#                                                                    DATE                                                                                             ")
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+specific_levels = ['1000.0', '925.0', '850.0', '700.0', '500.0', '400.0', '300.0', '250.0', '200.0']
+specific_indexes = [
+    'Showalter index', 'Lifted index', 'SWEAT index', 'K index',
+    'Totals totals index', 'Convective Available Potential Energy',
+    'Convective Inhibition', 'Temp [K] of the Lifted Condensation Level',
+    'Pres [hPa] of the Lifted Condensation Level',
+    'Precipitable water [mm] for entire sounding'
+]
+
+# Download sounding data
+sounding_data = download_sounding_data(station_id, year, month, day, hour)
+
+if sounding_data is not None:
+    # Extract specific levels and stability indexes
+    levels_dict, indexes_dict = extract_levels(sounding_data, specific_levels, specific_indexes)
+
+    # Calculate important variables
+    input_data = derived_variables(sounding_data, levels_dict, indexes_dict)
+
+# Authenticate with Google Sheets
+gc = gspread.authorize(creds)
+
+# Open the Google Sheets file by title
+worksheet = gc.open_by_url('https://docs.google.com/spreadsheets/d/19l3zk1vHuHaZ9eWVyI6gjGnLcessISW94YidAJKFOok/edit?gid=0#gid=0').sheet1
+
+# Get all data from the Google Sheet
+data = worksheet.get_all_values()
+
+# Create a Pandas DataFrame from the data
+df = pd.DataFrame(data[3:], columns=data[0])
+#print(df)
+
+# Select only the numeric columns for analysis
+numeric_columns = ['temp_925','temp_850','temp_700','temp_500','temp_400','wdir_250',
+                   'spd_shear','MixR1000','MixR850','MixR700','Te1000','Te850','Te700',
+                   'RH_87mb','RH_75mb','RH_53mb','LR_87mb','LR_57mb','LR_1km','LR_3km',
+                   'avg_wind_spd_1km','avg_wind_dir_1km','avg_wind_abv_sfc','avg_wind_dir',
+                   'thick1000_500','thick700_500','diff_theta_e','hmi','wmsi','gust','votd',
+                   'SHI','LI','SWI','KI','TTI','CAPE','CIN','LCL_T','LCL_P','PWAT']
+
+# Convert the DataFrame to a NumPy array
+data_array = df[numeric_columns].values
+
+print(" ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+print("                                                     SEARCH FOR ANALOGS ALL VARIABLES                                                                                ")
+print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+# Fit a Nearest Neighbors model
+k = 10  # Number of neighbors to find
+nn = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn.fit(df[numeric_columns])
+
+# Find the indices of k-nearest neighbors
+distances, indices = nn.kneighbors(input_data)
+
+# Retrieve the k-nearest analogs
+nearest_analogs = df.iloc[indices[0]]
+
+
+# Print the nearest analogs
+print("Date: " + sday)
+print("Today's Sounding:")
+print(input_data)
+print("Nearest Analog Days:")
+print(nearest_analogs)
+
+
+
+print(" ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+print("                                                     FLASHFLOOD SEARCH FOR ANALOGS                                                                                   ")
+print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+
+
+# Select the important variables for flash flood prediction
+important_variablesFF = ['Te850','Te700','RH_87mb','LR_1km','LR_3km','avg_wind_abv_sfc','KI','CAPE','PWAT']
+
+# Convert the DataFrame to a NumPy array
+data_array = df[important_variablesFF].values
+
+# Fit a Nearest Neighbors model
+k = 10  # Number of neighbors to find
+nn = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn.fit(data_array)
+
+# Select the important variables from input_data
+input_data_selected = input_data[important_variablesFF]
+
+# Find the indices of k-nearest neighbors
+distances, indices = nn.kneighbors(input_data_selected)
+
+# Retrieve the k-nearest analogs
+nearest_analogs = df.iloc[indices[0]]
+
+# Print the nearest analogs
+print("Today's Sounding:")
+print(input_data)
+print("Nearest Analog Days:")
+print(nearest_analogs)
+
+
+
+print(" ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+print("                                                   THUNDERSTORMWIND SEARCH FOR ANALOGS                                                                               ")
+print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+# Select the important variables for flash flood prediction
+important_variablesTW = [ 'avg_wind_abv_sfc','diff_theta_e', 'wmsi','LR_1km', 'LR_3km','LR_87mb','KI','RH_75mb','RH_53mb','CAPE','RH_87mb']
+
+# Convert the DataFrame to a NumPy array
+data_array = df[important_variablesTW].values
+
+# Fit a Nearest Neighbors model
+k = 10  # Number of neighbors to find
+nn = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn.fit(data_array)
+
+# Select the important variables from input_data
+input_data_selected = input_data[important_variablesTW]
+
+# Find the indices of k-nearest neighbors
+distances, indices = nn.kneighbors(input_data_selected)
+
+# Retrieve the k-nearest analogs
+nearest_analogs = df.iloc[indices[0]]
+
+# Print the nearest analogs
+print("Today's Sounding:")
+print(input_data)
+print("Nearest Analog Days:")
+print(nearest_analogs)
+
+
+
+print(" ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+print("                                                     WATERSPOUT SEARCH FOR ANALOGS                                                                                   ")
+print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+# Select the important variables for flash flood prediction
+important_variablesWS = ['LR_1km','spd_shear','MixR1000','spd_shear','LR_3km','MixR1000','MixR850','avg_wind_abv_sfc','avg_wind_dir','spd_shear','temp_850',
+                         'Te850','RH_87mb','CAPE','RH_87mb','avg_wind_spd_1km','LR_87mb']
+
+# Convert the DataFrame to a NumPy array
+data_array = df[important_variablesWS].values
+
+# Fit a Nearest Neighbors model
+k = 10  # Number of neighbors to find
+nn = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn.fit(data_array)
+
+# Select the important variables from input_data
+input_data_selected = input_data[important_variablesWS]
+
+# Find the indices of k-nearest neighbors
+distances, indices = nn.kneighbors(input_data_selected)
+
+# Retrieve the k-nearest analogs
+nearest_analogs = df.iloc[indices[0]]
+
+# Print the nearest analogs
+print("Today's Sounding:")
+print(input_data)
+print("Nearest Analog Days:")
+print(nearest_analogs)
+
+
+
+print(" ------------------------------------------------------------------------------------------------------------------------------------------------------------------- ")
+print("                                                     HAIL SEARCH FOR ANALOGS                                                                                         ")
+print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+
+# Select the important variables for flash flood prediction
+important_variablesHail = ['KI','CAPE','temp_500','RH_87mb','LR_87mb','diff_theta_e',
+                           'diff_theta_e','thick700_500','avg_wind_dir','wdir_250',]
+
+# Convert the DataFrame to a NumPy array
+data_array = df[important_variablesHail].values
+
+# Fit a Nearest Neighbors model
+k = 10  # Number of neighbors to find
+nn = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
+nn.fit(data_array)
+
+# Select the important variables from input_data
+input_data_selected = input_data[important_variablesHail]
+
+# Find the indices of k-nearest neighbors
+distances, indices = nn.kneighbors(input_data_selected)
+
+# Retrieve the k-nearest analogs
+nearest_analogs = df.iloc[indices[0]]
+
+# Print the nearest analogs
+print("Today's Sounding:")
+print(input_data)
+print("Nearest Analog Days:")
+print(nearest_analogs)
+
+
+
+
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import NearestNeighbors
 
-# Clean column names in df
-df.columns = df.columns.str.strip()
-
-# Ensure input_data columns are also cleaned
-input_data.columns = input_data.columns.str.strip()
-
-# Verify column names and access
-print("df columns:", df.columns)
-print("input_data columns:", input_data.columns)
 
 # Define the important variables for each weather risk
-flash_flood_vars = ['Te850','Te700','RH_87mb','LR_1km','LR_3km','avg_wind_abv_sfc','KI','CAPE','PWAT']
+flash_flood_vars = ['Te850', 'Te700', 'RH_87mb', 'LR_1km', 'LR_3km', 'avg_wind_abv_sfc', 'KI', 'CAPE', 'PWAT']
 thunderstorm_wind_vars = ['avg_wind_abv_sfc', 'diff_theta_e', 'wmsi', 'LR_1km', 'LR_3km', 'LR_87mb', 'KI', 'RH_75mb', 'RH_53mb', 'CAPE', 'RH_87mb']
-waterspout_vars = ['LR_1km', 'spd_shear', 'MixR1000', 'LR_3km', 'MixR850', 'avg_wind_abv_sfc', 'avg_wind_dir', 'temp_850', 'Te850', 'CAPE', 'RH_87mb', 'avg_wind_spd_1km', 'LR_87mb','Te700']
-hail_vars = ['KI', 'CAPE', 'temp_500', 'RH_87mb', 'diff_theta_e', 'thick700_500', 'avg_wind_dir', 'wdir_250']
+waterspout_vars = ['LR_1km', 'spd_shear', 'MixR1000', 'spd_shear', 'LR_3km', 'MixR1000', 'MixR850', 'avg_wind_abv_sfc', 'avg_wind_dir', 'temp_850', 'Te850',  'CAPE', 'RH_87mb', 'avg_wind_spd_1km', 'LR_87mb']
+hail_vars = ['KI', 'CAPE', 'temp_500', 'RH_87mb', 'LR_87mb', 'diff_theta_e', 'thick700_500', 'avg_wind_dir', 'wdir_250']
 
-# Check for missing columns in df
-missing_columns_df = [col for col in flash_flood_vars + thunderstorm_wind_vars + waterspout_vars + hail_vars if col not in df.columns]
-if missing_columns_df:
-    print(f"Missing columns in df: {missing_columns_df}")
+# Combine all variables
+all_vars = list(set(flash_flood_vars + thunderstorm_wind_vars + waterspout_vars + hail_vars))
 
-# Check for missing columns in input_data
-missing_columns_input_data = [col for col in flash_flood_vars + thunderstorm_wind_vars + waterspout_vars + hail_vars if col not in input_data.columns]
-if missing_columns_input_data:
-    print(f"Missing columns in input_data: {missing_columns_input_data}")
+# Filter the DataFrame to include only the important variables
+filtered_df = df[all_vars]
 
-# Use a smaller sample of the data for initial testing
-df_sample = df.sample(frac=0.1, random_state=42)
+# Train a RandomForestClassifier for prediction
+features = filtered_df.values
+target_variable = df['Weather Risks'].values
 
-# Train a RandomForestClassifier for each weather risk
-rf_flash_flood = RandomForestClassifier(n_estimators=10, random_state=42)
-rf_flash_flood.fit(df_sample[flash_flood_vars].values, df_sample['Weather Risks'].values)
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+rf_model.fit(features, target_variable)
 
-rf_thunderstorm_wind = RandomForestClassifier(n_estimators=10, random_state=42)
-rf_thunderstorm_wind.fit(df_sample[thunderstorm_wind_vars].values, df_sample['Weather Risks'].values)
+# Define today's weather data with the important variables
+today_weather_data = input_data[all_vars]
 
-rf_waterspout = RandomForestClassifier(n_estimators=10, random_state=42)
-rf_waterspout.fit(df_sample[waterspout_vars].values, df_sample['Weather Risks'].values)
+# Convert to array for prediction
+today_weather_array = today_weather_data.values.reshape(1, -1)
 
-rf_hail = RandomForestClassifier(n_estimators=10, random_state=42)
-rf_hail.fit(df_sample[hail_vars].values, df_sample['Weather Risks'].values)
-
-# Define today's weather data separately for each set of important variables
-today_flash_flood_data = input_data[flash_flood_vars]
-today_thunderstorm_wind_data = input_data[thunderstorm_wind_vars]
-today_waterspout_data = input_data[waterspout_vars]
-today_hail_data = input_data[hail_vars]
-
-# Convert to arrays for prediction
-today_flash_flood_array = today_flash_flood_data.values.reshape(1, -1)
-today_thunderstorm_wind_array = today_thunderstorm_wind_data.values.reshape(1, -1)
-today_waterspout_array = today_waterspout_data.values.reshape(1, -1)
-today_hail_array = today_hail_data.values.reshape(1, -1)
-
-# Predict today's weather risk for each model
-predicted_risk_prob_flash_flood = rf_flash_flood.predict_proba(today_flash_flood_array)
-predicted_risk_prob_thunderstorm_wind = rf_thunderstorm_wind.predict_proba(today_thunderstorm_wind_array)
-predicted_risk_prob_waterspout = rf_waterspout.predict_proba(today_waterspout_array)
-predicted_risk_prob_hail = rf_hail.predict_proba(today_hail_array)
-
-# Combine the predicted probabilities
-predicted_risk_prob_combined = (
-    predicted_risk_prob_flash_flood +
-    predicted_risk_prob_thunderstorm_wind +
-    predicted_risk_prob_waterspout +
-    predicted_risk_prob_hail
-) / 4
+# Predict today's weather risk
+predicted_risk_prob = rf_model.predict_proba(today_weather_array)
 
 # Convert predicted probabilities to percentages
-predicted_percentages = predicted_risk_prob_combined[0] * 100
+predicted_percentages = predicted_risk_prob[0] * 100
 
 # Filter out 'No Match' category
-weather_risks = rf_flash_flood.classes_  # Assuming all models have the same classes
+weather_risks = rf_model.classes_
 filtered_risks = [risk for risk in weather_risks if risk != 'No Match']
 filtered_percentages = [predicted_percentages[i] for i in range(len(weather_risks)) if weather_risks[i] != 'No Match']
 
 # Fit separate Nearest Neighbors models for each set of important variables
-k = 5  # Number of nearest neighbors
 nn_flash_flood = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
-nn_flash_flood.fit(df_sample[flash_flood_vars].values)
+nn_flash_flood.fit(df[flash_flood_vars].values)
 
 nn_thunderstorm_wind = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
-nn_thunderstorm_wind.fit(df_sample[thunderstorm_wind_vars].values)
+nn_thunderstorm_wind.fit(df[thunderstorm_wind_vars].values)
 
 nn_waterspout = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
-nn_waterspout.fit(df_sample[waterspout_vars].values)
+nn_waterspout.fit(df[waterspout_vars].values)
 
 nn_hail = NearestNeighbors(n_neighbors=k, metric='euclidean', n_jobs=-1)
-nn_hail.fit(df_sample[hail_vars].values)
+nn_hail.fit(df[hail_vars].values)
 
 # Adjust the prediction based on nearest neighbors for each weather risk
 def adjust_predictions(features, risk_name, nn_model):
@@ -101,7 +495,7 @@ def adjust_predictions(features, risk_name, nn_model):
     distances, indices = nn_model.kneighbors(input_data_selected)
 
     # Retrieve the k-nearest analogs
-    nearest_analogs = df_sample.iloc[indices[0]]
+    nearest_analogs = df.iloc[indices[0]]
     # Count occurrences of each weather risk in the nearest neighbors
     risk_counts = nearest_analogs['Weather Risks'].value_counts().to_dict()
 
@@ -116,6 +510,8 @@ adjust_predictions(flash_flood_vars, 'FlashFlood', nn_flash_flood)
 adjust_predictions(thunderstorm_wind_vars, 'ThunderstormWind', nn_thunderstorm_wind)
 adjust_predictions(waterspout_vars, 'Waterspout', nn_waterspout)
 adjust_predictions(hail_vars, 'Hail', nn_hail)
+
+
 
 # Normalize the percentages to sum to 100
 total_percentage = sum(filtered_percentages)
@@ -149,4 +545,48 @@ plt.ylim(0, 105)
 
 # Title and additional text
 plt.title("Risk Assessment (using TJSJ RAOB data) " + "valid " + sday, fontweight='bold', fontsize=10)
-#
+# Retrieve the actual values from today's weather data
+H8_H7_LRate = today_weather_data['LR_1km'].values[0]
+H7_H5_LRate = today_weather_data['LR_3km'].values[0]
+H5_H3_LRate = today_weather_data['LR_87mb'].values[0]
+T500 = today_weather_data['Te850'].values[0]  # Assuming T500 is Te850
+VIL_OTD = 72  # Static value as an example
+Te_Diff = today_weather_data['Te700'].values[0] - today_weather_data['Te850'].values[0]
+KI = today_weather_data['KI'].values[0]
+CAPE = today_weather_data['CAPE'].values[0]
+PWAT = today_weather_data['PWAT'].values[0]
+wind_0_3km = f"{today_weather_data['avg_wind_abv_sfc'].values[0]} kt/{today_weather_data['avg_wind_dir'].values[0]} deg"
+
+# Additional information on the right
+info_text = (
+    f"H8-H7 LRate      {H8_H7_LRate:.2f}\n"
+    f"H7-H5 LRate      {H7_H5_LRate:.2f}\n"
+    f"H5-H3 LRate      {H5_H3_LRate:.2f}\n"
+    f"T500                 {T500:.1f}\n"
+    f"VIL-OTD             {VIL_OTD}\n"
+    f"Te Diff             {Te_Diff:.2f}\n"
+    f"KI                   {KI:.1f}\n"
+    f"CAPE              {CAPE:.1f}\n"
+    f"PWAT              {PWAT:.2f}\n"
+    f"0-3km WIND   {wind_0_3km}"
+)
+
+plt.figtext(1, 0.5, info_text, fontsize=10, va='top')
+# Additional information on the right
+plt.figtext(1, 0.5, info_text, fontsize=10, va='top', color='blue')
+# Custom legend colors
+legend_colors = ['#999999', '#33CC00', '#EAEA00', '#FF0000']
+
+# Create custom legend handles
+legend_handles = [plt.Rectangle((0,0),1,1, color=color) for color in legend_colors]
+
+# Adding gridlines
+plt.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.7)
+
+# Legend
+plt.legend(legend_handles, ['Very Low Risk\nRI <= 20%', 'Slight Risk\n20% < RI < 40%', 'Moderate Risk\n40% <= RI <= 50%', 'High Risk\nRI > 50%'],
+           loc='upper center', prop={'size': 15}, bbox_to_anchor=(0.5, -0.15), fancybox=True, shadow=True, ncol=4)
+
+# Display the plot
+plt.tight_layout()
+plt.show()
